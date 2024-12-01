@@ -28,7 +28,7 @@ class ComplaintDataset(Dataset):
     def __init__(self, texts, labels):
         self.texts = texts.tolist()
         self.labels = labels.tolist()
-        self.tokenizer = lambda x: torch.tensor([word_to_index[word] for word in tokenize(x) if word in word_to_index], dtype=torch.long)
+        self.tokenizer = lambda x: [word_to_index[word] for word in tokenize(x) if word in word_to_index]
 
     def __len__(self):
         return len(self.labels)
@@ -37,7 +37,7 @@ class ComplaintDataset(Dataset):
         text = self.texts[idx]
         label = self.labels[idx]
         tokens = self.tokenizer(text)
-        return tokens, label  # Return tokenized text as tensor and label
+        return torch.tensor(tokens, dtype=torch.long), label  # Return tokenized text as tensor and label
 
 # Create vocabulary from training data
 all_words = set()
