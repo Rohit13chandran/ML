@@ -37,7 +37,9 @@ class ComplaintDataset(Dataset):
         text = self.texts[idx]
         label = self.labels[idx]
         tokens = self.tokenizer(text)
-        return torch.tensor(tokens, dtype=torch.long), label  # Return tokenized text as tensor and label
+        # Convert tokens to tensor (crucial step to fix the error)
+        tokens_tensor = torch.tensor(tokens, dtype=torch.long)
+        return tokens_tensor, label
 
 # Create vocabulary from training data
 all_words = set()
@@ -45,7 +47,7 @@ for text in X_train['Consumer complaint narrative']:
     all_words.update(tokenize(text))
 
 # Create a mapping from words to indices
-word_to_index = {word: idx + 1 for idx, word in enumerate(all_words)}  # Start indexing from 1
+word_to_index = {word: idx + 1 for idx, word in enumerate(all_words)}  
 
 # Collate function for padding sequences
 def collate_fn(batch):
