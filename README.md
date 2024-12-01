@@ -47,27 +47,33 @@ for text in X_train['Consumer complaint narrative']:
 # Create a mapping from words to indices
 word_to_index = {word: idx + 1 for idx, word in enumerate(all_words)}  # Start indexing from 1
 
-# Create datasets and dataloaders
+# Collate function for padding sequences
+def collate_fn(batch):
+    texts, labels = zip(*batch)  # Unzip into texts and labels
+    texts_padded = pad_sequence([torch.tensor(t) for t in texts], batch_first=True)  # Pad sequences
+    labels_tensor = torch.tensor(labels)  # Convert labels to tensor
+    return texts_padded, labels_tensor
+
+# Create datasets and dataloaders with padding using collate_fn
 train_dataset = ComplaintDataset(X_train['Consumer complaint narrative'].values, X_train['Product'].values)
 test_dataset = ComplaintDataset(X_test['Consumer complaint narrative'].values, X_test['Product'].values)
 
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=32)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=collate_fn)
+test_loader = DataLoader(test_dataset, batch_size=32, collate_fn=collate_fn)
 
-# Define an RNN-based model
-class RNNClassifier(nn.Module):
+# Define an RNN-based model with LSTM and dropout for regularization
+class ImprovedRNNClassifier(nn.Module):
     def __init__(self, vocab_size, embed_size, hidden_size, output_size):
-        super(RNNClassifier, self).__init__()
+        super(ImprovedRNNClassifier, self).__init__()
         self.embedding = nn.Embedding(vocab_size + 1, embed_size)  # +1 for padding index
-        self.rnn = nn.LSTM(embed_size, hidden_size, batch_first=True)
+        self.lstm = nn.LSTM(embed_size, hidden_size, batch_first=True)
         self.fc1 = nn.Linear(hidden_size, 128)
         self.dropout = nn.Dropout(0.5)
         self.fc2 = nn.Linear(128, output_size)
 
     def forward(self, x):
-        x = pad_sequence(x, batch_first=True)  # Pad sequences to ensure uniform input size for RNNs
         x = self.embedding(x)  # Embed input tokens
-        x, _ = self.rnn(x)  # Pass through RNN/LSTM
+        x, _ = self.lstm(x)  # Pass through LSTM
         x = x[:, -1]  # Get last hidden state (for sequence classification)
         x = torch.relu(self.fc1(x))
         x = self.dropout(x)
@@ -79,9 +85,9 @@ embed_size = 128   # Size of embeddings
 hidden_size = 64   # Size of hidden state in LSTM
 output_size = len(np.unique(df['Product']))  # Number of unique classes
 
-model = RNNClassifier(vocab_size, embed_size, hidden_size, output_size)
+model = ImprovedRNNClassifier(vocab_size, embed_size, hidden_size, output_size)
 
-# Define loss function and optimizer
+# Define loss function and optimizer with class weights to handle imbalance
 criterion = nn.CrossEntropyLoss(weight=torch.tensor(list(weights.values()), dtype=torch.float32))
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
