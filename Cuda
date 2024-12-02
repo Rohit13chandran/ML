@@ -1,0 +1,179 @@
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+import torch
+import torch.nn as nn
+from torch import optim
+from torch.utils.data import DataLoader
+from torch.utils.data.dataset import Dataset
+import torch.nn.functional as F
+
+from torchtext.datasets import AG_NEWS
+from torchtext.data.utils import get_tokenizer
+from torchtext.vocab import build_vocab_from_iterator
+import torchtext.transforms as T
+
+from tqdm.notebook import trange, tqdm
+
+# Define the hyperparameters
+learning_rate = 1e-4  # Learning rate for the optimizer
+nepochs = 20  # Number of training epochs
+batch_size = 32  # Batch size for training
+
+max_len = 128  # Maximum length of input sequences
+data_set_root = "../../datasets"  # Root directory of the dataset
+
+# Import the AG News Dataset
+dataset_train = AG_NEWS(root=data_set_root, split="train")  # Training dataset
+dataset_test = AG_NEWS(root=data_set_root, split="test")  # Test dataset
+
+tokenizer = get_tokenizer("basic_english")
+
+def yield_tokens(data_iter):
+    for _, text in data_iter:
+        yield tokenizer(text)
+
+vocab = build_vocab_from_iterator(
+    yield_tokens(dataset_train),
+    min_freq=2,
+    specials=['<pad>', '<sos>', '<eos>', '<unk>'],
+    special_first=True
+)
+
+vocab.set_default_index(vocab['<unk>'])
+vocab.get_itos()
+
+label, text = next(iter(dataset_train))
+
+print("Original Text:")
+print(text)
+
+print("\nTokenized Text:")
+print(tokenizer(text))
+
+text_tranform = T.Sequential(
+    T.VocabTransform(vocab=vocab),
+    T.AddToken(1, begin=True),
+    T.Truncate(max_seq_len=max_len),
+    T.AddToken(2, begin=False),
+    T.ToTensor(padding_value=0)
+)
+
+text_tokenizer = lambda batch: [tokenizer(x) for x in batch]
+
+data_loader_train = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=True)
+data_loader_test = DataLoader(dataset_test, batch_size=batch_size, shuffle=True, num_workers=4)
+
+class LSTM(nn.Module):
+    def __init__(self, num_emb, output_size, num_layers=1, hidden_size=128):
+        super(LSTM, self).__init__()
+        
+        self.embedding = nn.Embedding(num_emb, hidden_size)
+        self.lstm = nn.LSTM(input_size=hidden_size, hidden_size=hidden_size,
+                            num_layers=num_layers, batch_first=True, dropout=0.5)
+        self.fc_out = nn.Linear(hidden_size, output_size)
+
+    def forward(self, input_seq, hidden_in, mem_in):
+        input_embs = self.embedding(input_seq)
+        output, (hidden_out, mem_out) = self.lstm(input_embs, (hidden_in, mem_in))
+        return self.fc_out(output), hidden_out, mem_out
+
+device = torch.device(0 if torch.cuda.is_available() else 'cpu')
+
+hidden_size = 64
+num_layers = 3
+
+lstm_classifier = LSTM(num_emb=len(vocab), output_size=4,
+                       num_layers=num_layers, hidden_size=hidden_size).to(device)
+
+optimizer = optim.Adam(lstm_classifier.parameters(), lr=learning_rate)
+loss_fn = nn.CrossEntropyLoss()
+
+training_loss_logger = []
+test_loss_logger = []
+training_acc_logger = []
+test_acc_logger = []
+
+num_model_params = 0
+for param in lstm_classifier.parameters():
+    num_model_params += param.flatten().shape[0]
+
+print("-This Model Has %d (Approximately %d Million) Parameters!" % (num_model_params, num_model_params//1e6))
+
+pbar = trange(0, nepochs, leave=False, desc="Epoch")
+
+train_acc = 0
+test_acc = 0
+
+for epoch in pbar:
+    pbar.set_postfix_str('Accuracy: Train %.2f%%, Test %.2f%%' % (train_acc * 100, test_acc * 100))
+    
+    lstm_classifier.train()
+    steps = 0
+    
+    for label, text in tqdm(data_loader_train, desc="Training", leave=False):
+        bs = label.shape[0]
+        
+        text_tokens = text_tranform(text_tokenizer(text)).to(device)
+        label = (label - 1).to(device)
+        
+        hidden = torch.zeros(num_layers, bs, hidden_size, device=device)
+        memory = torch.zeros(num_layers, bs, hidden_size, device=device)
+        
+        pred, hidden, memory = lstm_classifier(text_tokens, hidden, memory)
+
+        loss = loss_fn(pred[:, -1, :], label)
+            
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        training_loss_logger.append(loss.item())
+        
+        train_acc += (pred[:, -1, :].argmax(1) == label).sum()
+        steps += bs
+        
+    train_acc = (train_acc/steps).item()
+    training_acc_logger.append(train_acc)
+    
+    lstm_classifier.eval()
+    steps = 0
+    
+    with torch.no_grad():
+        for label, text in tqdm(data_loader_test, desc="Testing", leave=False):
+            bs = label.shape[0]
+            text_tokens = text_tranform(text_tokenizer(text)).to(device)
+            label = (label - 1).to(device)
+
+            hidden = torch.zeros(num_layers, bs, hidden_size, device=device)
+            memory = torch.zeros(num_layers, bs, hidden_size, device=device)
+            
+            pred, hidden, memory = lstm_classifier(text_tokens, hidden, memory)
+
+            loss = loss_fn(pred[:, -1, :], label)
+            test_loss_logger.append(loss.item())
+
+            test_acc += (pred[:, -1, :].argmax(1) == label).sum()
+            steps += bs
+
+        test_acc = (test_acc/steps).item()
+        test_acc_logger.append(test_acc)
+
+_ = plt.figure(figsize=(10, 5))
+_ = plt.plot(np.linspace(0, nepochs, len(training_loss_logger)), training_loss_logger)
+_ = plt.plot(np.linspace(0, nepochs, len(test_loss_logger)), test_loss_logger)
+
+_ = plt.legend(["Train", "Test"])
+_ = plt.title("Training Vs Test Loss")
+_ = plt.xlabel("Epochs")
+_ = plt.ylabel("Loss")
+_ = plt.figure(figsize=(10, 5))
+_ = plt.plot(np.linspace(0, nepochs, len(training_acc_logger)), training_acc_logger)
+_ = plt.plot(np.linspace(0, nepochs, len(test_acc_logger)), test_acc_logger)
+
+_ = plt.legend(["Train", "Test"])
+_ = plt.title("Training Vs Test Accuracy")
+_ = plt.xlabel("Epochs")
+_ = plt.ylabel("Accuracy")
